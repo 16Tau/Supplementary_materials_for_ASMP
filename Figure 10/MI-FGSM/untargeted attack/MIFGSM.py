@@ -1,0 +1,71 @@
+import os
+import time
+import torch
+from torchvision import models, transforms
+from PIL import Image
+from torchattacks import MIFGSM
+import time
+
+
+image_start_time = time.time()
+
+input_dir = r"..."
+output_dir = r"..."
+os.makedirs(output_dir, exist_ok=True)
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+model = models.vit_b_32(pretrained=True).to(device)
+model.eval()
+
+mean = torch.tensor([0, 0, 0], device=device).view(3,1,1)
+std = torch.tensor([1, 1, 1], device=device).view(3,1,1)
+
+def normalize(x):
+    return (x - mean) / std
+
+def denormalize(x):
+    return x * std + mean
+
+to_tensor = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor()
+])
+
+attack = MIFGSM(
+    model,
+    eps=8/255,
+    alpha=1/255,
+    steps=100,
+    decay=1.0
+)
+
+total_attack_time = 0.0
+num_images = 0
+
+for img_name in os.listdir(input_dir):
+    if not img_name.lower().endswith((".png", ".jpg", ".jpeg", ".bmp")):
+        continue
+
+    img = Image.open(os.path.join(input_dir, img_name)).convert("RGB")
+    x_pixel = to_tensor(img).unsqueeze(0).to(device)
+    x_norm = normalize(x_pixel)
+
+    with torch.no_grad():
+        label = model(x_norm).argmax(dim=1)
+
+    start = time.perf_counter()
+    adv_x_norm = attack(x_norm, label)
+    end = time.perf_counter()
+
+    total_attack_time += (end - start)
+    num_images += 1
+
+    adv_x_pixel = torch.clamp(denormalize(adv_x_norm), 0, 1)
+    adv_img = transforms.ToPILImage()(adv_x_pixel.squeeze(0).cpu())
+    adv_img.save(os.path.join(output_dir, img_name))
+
+    print(f"[OK] {img_name}")
+
+avg_time = total_attack_time / num_images
+print(f"{avg_time:.6f}")
